@@ -19,8 +19,8 @@ import { registerSheetsTools } from "./tools/sheets.js";
 
 const server = new McpServer({
   name: "mpa-procurement",
-  version: "2.0.0",
-  description: "MPA Procurement Intelligence — 12 portals, 30+ tools. SAM.gov, DemandStar, MFMP, Bonfire, BidNet, GPO Publish, BidSync/Periscope S2G, OpenGov, IonWave, FL County Direct, FL VBS, USPS.",
+  version: "2.2.0",
+  description: "MPA Procurement Intelligence — 12 portals, 35+ tools, Google Sheets pipeline with batch API, go/no-go scoring engine, and scan_and_push orchestrator.",
 });
 
 // Register all tools
@@ -43,7 +43,7 @@ registerSheetsTools(server);
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error("MPA Procurement MCP Server v2.0 running (30+ tools across 12 portals + aggregator)");
+  console.error("MPA Procurement MCP Server v2.2 running (35+ tools: 12 portals + aggregator + sheets pipeline)");
 }
 
 main().catch((err) => {

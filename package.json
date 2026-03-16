@@ -1,6 +1,6 @@
 {
   "name": "mpa-procurement-mcp",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "MPA Procurement Intelligence — 12 portals, 30+ tools, Google Sheets pipeline integration.",
   "type": "module",
   "bin": {

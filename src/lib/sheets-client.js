@@ -1,6 +1,8 @@
 /**
  * Google Sheets API Client — Direct API with service account auth.
  * ~200-400ms per call vs 1.5-5.7s through Pipedream connector.
+ *
+ * v2.1: Added batchValueUpdate for bulk writes (102 calls → 2 calls).
  */
 import { google } from "googleapis";
 import { readFileSync } from "fs";
@@ -17,16 +19,28 @@ function getClient() {
 
   if (!GOOGLE_SHEETS_CREDS_PATH) {
     throw new Error(
-      "GOOGLE_SHEETS_CREDS_PATH not set. Point it at your service account JSON key file."
+      "GOOGLE_SHEETS_CREDS_PATH not set. " +
+      "Point it at your service account JSON key file. " +
+      "See SETUP.md Step 5 for instructions."
     );
   }
   if (!PROCUREMENT_SHEET_ID) {
     throw new Error(
-      "PROCUREMENT_SHEET_ID not set. Set it to the Google Sheet ID."
+      "PROCUREMENT_SHEET_ID not set. " +
+      "Add PROCUREMENT_SHEET_ID=1ze-9C0g924sotn3emm5j7N_jtw-MvRiBWDrh1T1tJa8 to your .env file."
     );
   }
 
-  const creds = JSON.parse(readFileSync(GOOGLE_SHEETS_CREDS_PATH, "utf8"));
+  let creds;
+  try {
+    creds = JSON.parse(readFileSync(GOOGLE_SHEETS_CREDS_PATH, "utf8"));
+  } catch (err) {
+    throw new Error(
+      `Cannot read service account key at "${GOOGLE_SHEETS_CREDS_PATH}": ${err.message}. ` +
+      "Download a new key from Google Cloud Console → IAM → Service Accounts → Keys tab."
+    );
+  }
+
   const auth = new google.auth.GoogleAuth({
     credentials: creds,
     scopes: ["https://www.googleapis.com/auth/spreadsheets"],
@@ -34,6 +48,21 @@ function getClient() {
   _sheets = google.sheets({ version: "v4", auth });
   return _sheets;
 }
+
+// ---- Color constants (shared across formatting functions) ----
+const COLORS = {
+  BID:    { bg: { red: 0.85, green: 0.93, blue: 0.83 }, fg: { red: 0.15, green: 0.5, blue: 0.15 } },
+  REVIEW: { bg: { red: 1.0, green: 0.95, blue: 0.8 },  fg: { red: 0.6, green: 0.4, blue: 0.0 } },
+  SKIP:   { bg: { red: 0.96, green: 0.8, blue: 0.8 },  fg: { red: 0.6, green: 0.15, blue: 0.15 } },
+};
+
+function scoreColor(score) {
+  if (score >= 75) return COLORS.BID;
+  if (score >= 50) return COLORS.REVIEW;
+  return COLORS.SKIP;
+}
+
+// ---- Core API functions ----
 
 /**
  * Read all values from a range. Returns 2D array of strings.
@@ -82,10 +111,29 @@ export async function updateRange(range, values) {
 }
 
 /**
+ * Batch update multiple value ranges in a single API call.
+ * This is the key performance improvement: 102 sequential calls → 1 call.
+ * @param {Array<{range: string, values: string[][]}>} updates - Array of range+value pairs
+ */
+export async function batchValueUpdate(updates) {
+  if (!updates.length) return null;
+  const sheets = getClient();
+  const res = await sheets.spreadsheets.values.batchUpdate({
+    spreadsheetId: PROCUREMENT_SHEET_ID,
+    resource: {
+      valueInputOption: "USER_ENTERED",
+      data: updates,
+    },
+  });
+  return res.data;
+}
+
+/**
  * Execute a batchUpdate request (formatting, conditional formatting, etc.).
  * @param {object[]} requests - Array of Sheets API request objects
  */
 export async function batchUpdate(requests) {
+  if (!requests.length) return null;
   const sheets = getClient();
   const res = await sheets.spreadsheets.batchUpdate({
     spreadsheetId: PROCUREMENT_SHEET_ID,
@@ -94,19 +142,56 @@ export async function batchUpdate(requests) {
   return res.data;
 }
 
+// ---- Formatting helpers (build requests without executing) ----
+
 /**
- * Apply standard MPA formatting to newly added rows.
- * - Conditional coloring on Go/No-Go column (J)
- * - Score column coloring (G)
- * - Alternating row shading
- * @param {number} startRow - 0-indexed row number where new data starts
- * @param {number} endRow - 0-indexed row number where new data ends (exclusive)
- * @param {number} sheetId - Worksheet ID (default 0 = first sheet)
+ * Build formatting requests for a Go/No-Go cell.
+ * Returns a request object — does NOT call the API.
  */
-export async function formatNewRows(startRow, endRow, sheetId = 0) {
+export function buildGoNoGoFormat(row, decision, sheetId = 0) {
+  const c = COLORS[decision] || COLORS.SKIP;
+  return {
+    repeatCell: {
+      range: { sheetId, startRowIndex: row, endRowIndex: row + 1, startColumnIndex: 9, endColumnIndex: 10 },
+      cell: {
+        userEnteredFormat: {
+          backgroundColor: c.bg,
+          textFormat: { bold: true, foregroundColor: c.fg },
+        },
+      },
+      fields: "userEnteredFormat(backgroundColor,textFormat)",
+    },
+  };
+}
+
+/**
+ * Build formatting requests for a Score cell.
+ * Returns a request object — does NOT call the API.
+ */
+export function buildScoreFormat(row, score, sheetId = 0) {
+  const c = scoreColor(score);
+  return {
+    repeatCell: {
+      range: { sheetId, startRowIndex: row, endRowIndex: row + 1, startColumnIndex: 6, endColumnIndex: 7 },
+      cell: {
+        userEnteredFormat: {
+          backgroundColor: c.bg,
+          textFormat: { bold: true, foregroundColor: c.fg },
+        },
+      },
+      fields: "userEnteredFormat(backgroundColor,textFormat)",
+    },
+  };
+}
+
+/**
+ * Build formatting requests for newly added rows (borders, shading, alignment).
+ * Returns an array of request objects — does NOT call the API.
+ */
+export function buildNewRowFormats(startRow, endRow, sheetId = 0) {
   const requests = [];
 
-  // Light gray background for all new data cells
+  // Borders + font for all new cells
   requests.push({
     repeatCell: {
       range: { sheetId, startRowIndex: startRow, endRowIndex: endRow, startColumnIndex: 0, endColumnIndex: 15 },
@@ -139,99 +224,33 @@ export async function formatNewRows(startRow, endRow, sheetId = 0) {
     }
   }
 
-  // Center-align columns G-J and N-O
-  const centerCols = [
-    [6, 10],  // G-J (Score, MPA Fit, ROI, Go/No-Go)
-    [13, 15], // N-O (Found Date, Last Updated)
-  ];
-  for (const [start, end] of centerCols) {
+  // Center-align G-J and N-O
+  for (const [start, end] of [[6, 10], [13, 15]]) {
     requests.push({
       repeatCell: {
         range: { sheetId, startRowIndex: startRow, endRowIndex: endRow, startColumnIndex: start, endColumnIndex: end },
         cell: {
-          userEnteredFormat: {
-            horizontalAlignment: "CENTER",
-          },
+          userEnteredFormat: { horizontalAlignment: "CENTER" },
         },
         fields: "userEnteredFormat.horizontalAlignment",
       },
     });
   }
 
-  if (requests.length > 0) {
-    await batchUpdate(requests);
-  }
+  return requests;
 }
 
-/**
- * Color a specific cell based on Go/No-Go value.
- * BID = green, REVIEW = amber, SKIP = red
- * @param {number} row - 0-indexed row
- * @param {string} decision - BID, REVIEW, or SKIP
- * @param {number} sheetId - Worksheet ID (default 0)
- */
+// ---- Legacy convenience wrappers (still usable for one-off calls) ----
+
+export async function formatNewRows(startRow, endRow, sheetId = 0) {
+  const requests = buildNewRowFormats(startRow, endRow, sheetId);
+  if (requests.length) await batchUpdate(requests);
+}
+
 export async function colorGoNoGoCell(row, decision, sheetId = 0) {
-  const colors = {
-    BID: { red: 0.85, green: 0.93, blue: 0.83 },     // light green
-    REVIEW: { red: 1.0, green: 0.95, blue: 0.8 },     // light amber
-    SKIP: { red: 0.96, green: 0.8, blue: 0.8 },        // light red
-  };
-  const textColors = {
-    BID: { red: 0.15, green: 0.5, blue: 0.15 },
-    REVIEW: { red: 0.6, green: 0.4, blue: 0.0 },
-    SKIP: { red: 0.6, green: 0.15, blue: 0.15 },
-  };
-  const bg = colors[decision] || colors.SKIP;
-  const fg = textColors[decision] || textColors.SKIP;
-
-  await batchUpdate([
-    {
-      repeatCell: {
-        range: { sheetId, startRowIndex: row, endRowIndex: row + 1, startColumnIndex: 9, endColumnIndex: 10 },
-        cell: {
-          userEnteredFormat: {
-            backgroundColor: bg,
-            textFormat: { bold: true, foregroundColor: fg },
-          },
-        },
-        fields: "userEnteredFormat(backgroundColor,textFormat)",
-      },
-    },
-  ]);
+  await batchUpdate([buildGoNoGoFormat(row, decision, sheetId)]);
 }
 
-/**
- * Color the Score cell (column G) based on value.
- * 75+ = green, 50-74 = amber, <50 = red
- * @param {number} row - 0-indexed row
- * @param {number} score - Score value 0-100
- * @param {number} sheetId - Worksheet ID (default 0)
- */
 export async function colorScoreCell(row, score, sheetId = 0) {
-  let bg, fg;
-  if (score >= 75) {
-    bg = { red: 0.85, green: 0.93, blue: 0.83 };
-    fg = { red: 0.15, green: 0.5, blue: 0.15 };
-  } else if (score >= 50) {
-    bg = { red: 1.0, green: 0.95, blue: 0.8 };
-    fg = { red: 0.6, green: 0.4, blue: 0.0 };
-  } else {
-    bg = { red: 0.96, green: 0.8, blue: 0.8 };
-    fg = { red: 0.6, green: 0.15, blue: 0.15 };
-  }
-
-  await batchUpdate([
-    {
-      repeatCell: {
-        range: { sheetId, startRowIndex: row, endRowIndex: row + 1, startColumnIndex: 6, endColumnIndex: 7 },
-        cell: {
-          userEnteredFormat: {
-            backgroundColor: bg,
-            textFormat: { bold: true, foregroundColor: fg },
-          },
-        },
-        fields: "userEnteredFormat(backgroundColor,textFormat)",
-      },
-    },
-  ]);
+  await batchUpdate([buildScoreFormat(row, score, sheetId)]);
 }

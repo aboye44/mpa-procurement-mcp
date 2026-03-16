@@ -14,120 +14,129 @@ import { runFLCountyScan } from "./fl-counties.js";
 import { runFLVBSScan } from "./fl-vbs.js";
 import { runUSPSScan } from "./usps.js";
 
+/**
+ * Run the full portal scan. Exported so scan_and_push can call it directly.
+ * Returns { results: [], errors: [] }.
+ */
+export async function runFullScan({ days_back = 14, skip_portals = [], quick_scan = false } = {}) {
+  const skip = new Set(skip_portals.map((s) => s.toLowerCase()));
+  const allResults = [];
+  const errors = [];
+
+  // SAM.gov (API - fastest, most reliable)
+  if (!skip.has("sam.gov") && !skip.has("sam")) {
+    try {
+      const samResults = await runSamScan(days_back);
+      allResults.push(...samResults);
+    } catch (e) { errors.push(`SAM.gov: ${e.message}`); }
+  }
+
+  // DemandStar (browser)
+  if (!skip.has("demandstar")) {
+    try {
+      const dsResults = await runDemandStarScan();
+      allResults.push(...dsResults);
+    } catch (e) { errors.push(`DemandStar: ${e.message}`); }
+  }
+
+  // MFMP (browser)
+  if (!skip.has("mfmp")) {
+    try {
+      const mfmpResults = await runMFMPScan();
+      allResults.push(...mfmpResults);
+    } catch (e) { errors.push(`MFMP: ${e.message}`); }
+  }
+
+  // Bonfire (browser)
+  if (!skip.has("bonfire")) {
+    try {
+      const bonfireResults = await runBonfireScan();
+      allResults.push(...bonfireResults);
+    } catch (e) { errors.push(`Bonfire: ${e.message}`); }
+  }
+
+  // BidNet (browser)
+  if (!skip.has("bidnet")) {
+    try {
+      const bidnetResults = await runBidNetScan();
+      allResults.push(...bidnetResults);
+    } catch (e) { errors.push(`BidNet: ${e.message}`); }
+  }
+
+  // GPO Publish (API + browser)
+  if (!skip.has("gpo") && !skip.has("gpo publish")) {
+    try {
+      const gpoResults = await runGPOScan();
+      allResults.push(...gpoResults);
+    } catch (e) { errors.push(`GPO Publish: ${e.message}`); }
+  }
+
+  // BidSync / Periscope S2G (browser)
+  if (!skip.has("bidsync") && !skip.has("periscope") && !quick_scan) {
+    try {
+      const bidsyncResults = await runBidSyncScan();
+      allResults.push(...bidsyncResults);
+    } catch (e) { errors.push(`BidSync: ${e.message}`); }
+  }
+
+  // OpenGov (browser)
+  if (!skip.has("opengov")) {
+    try {
+      const opengovResults = await runOpenGovScan();
+      allResults.push(...opengovResults);
+    } catch (e) { errors.push(`OpenGov: ${e.message}`); }
+  }
+
+  // IonWave (browser)
+  if (!skip.has("ionwave") && !quick_scan) {
+    try {
+      const ionwaveResults = await runIonWaveScan();
+      allResults.push(...ionwaveResults);
+    } catch (e) { errors.push(`IonWave: ${e.message}`); }
+  }
+
+  // FL County Direct (browser)
+  if (!skip.has("county") && !skip.has("fl county") && !skip.has("counties") && !quick_scan) {
+    try {
+      const countyResults = await runFLCountyScan();
+      allResults.push(...countyResults);
+    } catch (e) { errors.push(`FL Counties: ${e.message}`); }
+  }
+
+  // FL VBS (browser)
+  if (!skip.has("vbs") && !skip.has("fl vbs")) {
+    try {
+      const vbsResults = await runFLVBSScan();
+      allResults.push(...vbsResults);
+    } catch (e) { errors.push(`FL VBS: ${e.message}`); }
+  }
+
+  // USPS (browser)
+  if (!skip.has("usps")) {
+    try {
+      const uspsResults = await runUSPSScan();
+      allResults.push(...uspsResults);
+    } catch (e) { errors.push(`USPS: ${e.message}`); }
+  }
+
+  // Close shared browser
+  await closeBrowser();
+
+  return { results: allResults, errors };
+}
+
 export function registerAggregatorTools(server) {
   // ---- Full procurement scan (all 12 sources) ----
   server.tool(
     "full_procurement_scan",
-    "Run a comprehensive procurement scan across ALL 12 sources: SAM.gov, DemandStar, MFMP, Bonfire, BidNet, GPO Publish, BidSync/Periscope S2G, OpenGov, IonWave, FL County Direct, FL VBS, and USPS. Deduplicates, scores, saves to tracker, and exports the feed. This is the one-command replacement for all procurement crons.",
+    "Run a comprehensive procurement scan across ALL 12 sources: SAM.gov, DemandStar, MFMP, Bonfire, BidNet, GPO Publish, BidSync/Periscope S2G, OpenGov, IonWave, FL County Direct, FL VBS, and USPS. Deduplicates, scores, saves to tracker, and exports the feed. Use scan_and_push instead if you want results auto-pushed to the Google Sheet.",
     {
       days_back: z.number().optional().describe("Days back for SAM.gov (default 14)"),
       skip_portals: z.array(z.string()).optional().describe("Portal names to skip (e.g. ['mfmp', 'bonfire', 'ionwave'])"),
       quick_scan: z.boolean().optional().describe("Skip slower browser portals (BidSync, IonWave, FL Counties). Default false."),
     },
     async (params) => {
-      const daysBack = params.days_back || 14;
-      const skip = new Set((params.skip_portals || []).map((s) => s.toLowerCase()));
-      const allResults = [];
-      const errors = [];
-
-      // SAM.gov (API - fastest, most reliable)
-      if (!skip.has("sam.gov") && !skip.has("sam")) {
-        try {
-          const samResults = await runSamScan(daysBack);
-          allResults.push(...samResults);
-        } catch (e) { errors.push(`SAM.gov: ${e.message}`); }
-      }
-
-      // DemandStar (browser)
-      if (!skip.has("demandstar")) {
-        try {
-          const dsResults = await runDemandStarScan();
-          allResults.push(...dsResults);
-        } catch (e) { errors.push(`DemandStar: ${e.message}`); }
-      }
-
-      // MFMP (browser)
-      if (!skip.has("mfmp")) {
-        try {
-          const mfmpResults = await runMFMPScan();
-          allResults.push(...mfmpResults);
-        } catch (e) { errors.push(`MFMP: ${e.message}`); }
-      }
-
-      // Bonfire (browser)
-      if (!skip.has("bonfire")) {
-        try {
-          const bonfireResults = await runBonfireScan();
-          allResults.push(...bonfireResults);
-        } catch (e) { errors.push(`Bonfire: ${e.message}`); }
-      }
-
-      // BidNet (browser)
-      if (!skip.has("bidnet")) {
-        try {
-          const bidnetResults = await runBidNetScan();
-          allResults.push(...bidnetResults);
-        } catch (e) { errors.push(`BidNet: ${e.message}`); }
-      }
-
-      // GPO Publish (API + browser)
-      if (!skip.has("gpo") && !skip.has("gpo publish")) {
-        try {
-          const gpoResults = await runGPOScan();
-          allResults.push(...gpoResults);
-        } catch (e) { errors.push(`GPO Publish: ${e.message}`); }
-      }
-
-      // BidSync / Periscope S2G (browser)
-      if (!skip.has("bidsync") && !skip.has("periscope") && !params.quick_scan) {
-        try {
-          const bidsyncResults = await runBidSyncScan();
-          allResults.push(...bidsyncResults);
-        } catch (e) { errors.push(`BidSync: ${e.message}`); }
-      }
-
-      // OpenGov (browser)
-      if (!skip.has("opengov")) {
-        try {
-          const opengovResults = await runOpenGovScan();
-          allResults.push(...opengovResults);
-        } catch (e) { errors.push(`OpenGov: ${e.message}`); }
-      }
-
-      // IonWave (browser)
-      if (!skip.has("ionwave") && !params.quick_scan) {
-        try {
-          const ionwaveResults = await runIonWaveScan();
-          allResults.push(...ionwaveResults);
-        } catch (e) { errors.push(`IonWave: ${e.message}`); }
-      }
-
-      // FL County Direct (browser)
-      if (!skip.has("county") && !skip.has("fl county") && !skip.has("counties") && !params.quick_scan) {
-        try {
-          const countyResults = await runFLCountyScan();
-          allResults.push(...countyResults);
-        } catch (e) { errors.push(`FL Counties: ${e.message}`); }
-      }
-
-      // FL VBS (browser)
-      if (!skip.has("vbs") && !skip.has("fl vbs")) {
-        try {
-          const vbsResults = await runFLVBSScan();
-          allResults.push(...vbsResults);
-        } catch (e) { errors.push(`FL VBS: ${e.message}`); }
-      }
-
-      // USPS (browser)
-      if (!skip.has("usps")) {
-        try {
-          const uspsResults = await runUSPSScan();
-          allResults.push(...uspsResults);
-        } catch (e) { errors.push(`USPS: ${e.message}`); }
-      }
-
-      // Close shared browser
-      await closeBrowser();
+      const { results: allResults, errors } = await runFullScan(params);
 
       // Save to tracker
       const saveResults = [];
