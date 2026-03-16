@@ -1,0 +1,26 @@
+{
+  "name": "mpa-procurement-mcp",
+  "version": "2.1.0",
+  "description": "MPA Procurement Intelligence — 12 portals, 30+ tools, Google Sheets pipeline integration.",
+  "type": "module",
+  "bin": {
+    "mpa-procurement-mcp": "./src/index.js"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "scan": "node src/cli-scan.js",
+    "install-browser": "npx playwright install chromium"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "playwright": "^1.48.0",
+    "dotenv": "^16.4.0",
+    "googleapis": "^144.0.0",
+    "zod": "^3.23.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "license": "MIT",
+  "author": "Alec Boye <alec@mailpro.org>"
+}
